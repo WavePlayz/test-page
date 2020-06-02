@@ -8,9 +8,291 @@
 <body style="height: 100%; width: 100%;">
   <pre><code class="javascript">
 
-let data = this;
+class Interpolator {
+	static _interpolations () {
+		return {
+			linear: this._linear,
+			$bezier: this._bezierCurve,
+			cubic: this._cubicSpline,
+			catmull: this._catmullRomSpline,
+			hermite: this._hermiteSpline
+		};
+	}
+	
+	static hasInterpolation (interpolationName) {
+		return interpolationName in this._interpolations();
+	}
+	
+	static getInterpolation (interpolationName) {
+		const interpolations = this._interpolations();
+		return interpolations[ interpolationName ] || interpolations.catmull;
+	}
+	
+	static select (interpolationName) {
+		const interpolation = this.getInterpolation( interpolationName );
+		return this._getMethodsFrom (interpolation);
+	}
+	
+	static _getMethodsFrom (interpolation) {
+		const self = this;
+		let { 
+			getBasis, 
+			getGradient, 
+			interpolate = this._interpolatePoint
+		} = interpolation();
+		
+		let getPointAt, getGradientAt;
+		
+		function getMagnitude () {
+			const [ x = 0, y = 0, z = 0 ] = [ this.x, this.y, this.z ];
+			return Math.sqrt( x*x + y*y + z*z );
+		}
+		
+		if (getBasis) {
+			getPointAt = pathDetails => {
+				const unitTimeExponents = self._getUnitTimeExponents( pathDetails );
+				const coefficients = getBasis( unitTimeExponents );
+				
+				return interpolate( pathDetails, coefficients, self );
+			}
+			
+			getGradientAt = pathDetails => {
+				const unitTimeExponents = self._getUnitTimeExponents( pathDetails );
+				const coefficients = getGradient( unitTimeExponents );
+				
+				let interpolatedData = interpolate( pathDetails, coefficients, self );
+				interpolatedData.magnitude = getMagnitude;
+				
+				return interpolatedData;
+			}
+		} else {
+			getPointAt = getGradientAt = pathDetails => interpolate(pathDetails, self);
+		}
+		
+		return { getPointAt, getGradientAt };
+	}
+	
+	static _getUnitTimeExponents ({ time, easing }) {
+		time %= 1;
+		
+		if (typeof easing == "function") time = easing(time);
+		
+		return [ 
+			time,
+			time * time,  
+			time * time * time
+		];
+	}
+	
+	static _getNodes ({ time, keypoints, isPathClosed = false }) {
+		const length = keypoints.length;
+		
+		let node0,
+			node1 = time | 0,
+			node2 = (node1 + 1) % length,
+			node3;
+		
+		if (isPathClosed) {
+			node3 = (node2 + 1) % length;
+			node0 = (node1 > 0 ? node1 : length) - 1;
+		} else {
+			node3 = node2 < length - 1  ? node2 + 1  : node2;
+			node0 = node1 > 0 ? node1 - 1 : node1;
+		}
+			
+		return [
+			keypoints[ node0 ],
+			keypoints[ node1 ],
+			keypoints[ node2 ],
+			keypoints[ node3 ]
+		];
+	}
+	
+	static _interpolatePoint (self, pathDetails, coefficients, propertiesToInterpolate) {
+		const [ node0, node1, node2, node3 ] = self._getNodes( pathDetails );
+		const [ A, B, C, D ] = coefficients;
+		
+		let interpolatedData = {};
+		
+		for (let property in node1) {
+			if (typeof node1[ property ] != "number") {
+				interpolatedData[ property ] = node1[ property ];
+				continue;
+			}
+			
+			interpolatedData[ property ] = (
+				node0[ property ] * A +
+				node1[ property ] * B +
+				node2[ property ] * C +
+				node3[ property ] * D
+			);
+		}
+		
+		return interpolatedData;
+	}
+	
+	/** Interpolations */
+	static _linear () {
+		let properties = {};
+		
+		properties.interpolate = (pathDetails, self) => {
+			const [ _ , node1, node2] = self._getNodes( pathDetails );
+			const [ deltaTime ] = self._getUnitTimeExponents( pathDetails );
+			let interpolatedData = {};
+	
+			for (let property in node1) {
+				if (typeof node1[ property ] != "number") {
+					interpolatedData[ property ] = node1[ property ];
+					continue;
+				}
+				
+				interpolatedData[ property ] = node1[ property ]  +  ( node2[ property ]  -  node1[ property ] )  *  deltaTime;
+			}
+			
+			return interpolatedData;
+		}
+			
+		return properties;
+	}
+	
+	
+	static _bezierCurve () {
+		let properties = {};
+		
+		properties.getBasis = ([ deltaTime,  deltaTime2,  deltaTime3 ]) => {
+			return [
+				( -deltaTime3 + 3 * deltaTime2 - 3 * deltaTime + 1 ), // (1 - t)^3
+				( 3 * deltaTime3 - 6 * deltaTime2 + 3 * deltaTime ), // 3 * (1 - t)^2 * t
+				( -3 * deltaTime3 + 3 * deltaTime2 ), // 3 * (1 - t) * t * t
+				( deltaTime3 ) // t^3
+			];
+		}
+			
+		properties.getGradient = ([ deltaTime,  deltaTime2 ]) => {
+			return [
+				( -3 * deltaTime2 + 4 * deltaTime - 1 ),
+				( 3 * deltaTime2 - 4 * deltaTime ),
+				( -3 * deltaTime2 + 2 * deltaTime + 1 ),
+				( 3 * deltaTime2 - 2 * deltaTime )
+			];
+		}
+		
+		return properties;
+	}
+	
+	
+	static _cubicSpline () {
+		let properties = {};
+		
+		properties.getBasis = ([ deltaTime,  deltaTime2,  deltaTime3 ]) => {
+			return [
+				( -deltaTime3 + 2 * deltaTime2 - deltaTime ),
+				( deltaTime3 - 2 * deltaTime2 + 1 ),
+				( -deltaTime3 + deltaTime2 + deltaTime ),
+				( deltaTime3 - deltaTime2 )
+			];
+		}
+			
+		properties.getGradient = ([ deltaTime,  deltaTime2 ]) => {
+			return [
+				( -3 * deltaTime2 + 4 * deltaTime - 1 ),
+				( 3 * deltaTime2 - 4 * deltaTime ),
+				( -3 * deltaTime2 + 2 * deltaTime + 1 ),
+				( 3 * deltaTime2 - 2 * deltaTime )
+			];
+		}
+		
+		return properties;
+	}
+	
+	
+	static _catmullRomSpline () {
+		let properties = {};
+		
+		properties.getBasis = ([ deltaTime,  deltaTime2,  deltaTime3 ]) => {
+			return [
+				( -deltaTime3  +  2 * deltaTime2  -  deltaTime ),
+				( 3 * deltaTime3  -  5 * deltaTime2  +  2 ),
+				( -3 * deltaTime3  +  4 * deltaTime2  +  deltaTime ),
+				( deltaTime3  -  deltaTime2 )
+			].map(coefficient => coefficient *= 0.5);
+		}
+			
+		properties.getGradient = ([ deltaTime,  deltaTime2 ]) => {
+			return [
+				( -3 * deltaTime2  +  4 * deltaTime  -  1 ),
+				( 9 * deltaTime2  -  10 * deltaTime ),
+				( -9 * deltaTime2  +  8 * deltaTime  +  1 ),
+				( 3 * deltaTime2  -  2 * deltaTime )
+			].map(coefficient => coefficient *= 0.5);
+		}
+		
+		return properties;
+	}
+	
+	
+	static _hermiteSpline () {
+		let properties = {};
+		
+		properties.getBasis = ([ deltaTime,  deltaTime2,  deltaTime3 ]) => {
+			return [
+				( 2 * deltaTime3 - 3 * deltaTime2 + 1 ),
+				( deltaTime3 - 2 * deltaTime2 + deltaTime ),
+				( -2 * deltaTime3 + 3 * deltaTime2 ),
+				( deltaTime3 - deltaTime2 )
+			];
+		}
+			
+		properties.getGradient = ([ deltaTime,  deltaTime2 ]) => {
+			return [
+				( 6 * deltaTime2 - 6 * deltaTime ),
+				( 3 * deltaTime2 - 4 * deltaTime + 1 ),
+				( -6 * deltaTime2 + 6 * deltaTime ),
+				( 3 * deltaTime2 - 2 * deltaTime )
+			];
+		}
+			
+		properties.interpolate = (pathDetails, coefficients, self) => {
+			const [ node0, node1, node2, node3 ] = self._getNodes( pathDetails );
+			const [ A, B, C, D ] = coefficients;
+			let { tension = 0, bias = 0 } = pathDetails;
+			
+			tension = (1 - tension) * 0.5;
+			const [ d1, d2 ] = [
+				(1 + bias) * tension, 
+				(1 - bias) * tension
+			];
+		
+			let interpolatedData = {};
+		
+			for (let property in node1) {
+				if (typeof node1[ property ] != "number") {
+					interpolatedData[ property ] = node1[ property ];
+					continue;
+				}
+				
+				let mu1 = (
+					(node1[ property ] - node0[ property ]) * d1 +
+					(node2[ property ] - node1[ property ]) * d2
+				);
+				let mu2 = (
+					(node2[ property ] - node1[ property ]) * d1 +
+					(node3[ property ] - node2[ property ]) * d2
+				);
+				
+				interpolatedData[ property ] = 
+					node1[ property ] * A  +  
+					mu1 * B  +  
+					node2[ property ] * C + 
+					mu2 * D;
+			}
+			return interpolatedData;
+		}
+		
+		return properties;
+	}
+}
 
-
-</code></pre>
+  </code></pre>
 </body>
 </html>
